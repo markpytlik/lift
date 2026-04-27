@@ -1197,6 +1197,15 @@ document.addEventListener('visibilitychange', () => {
     renderAll();
   }
 });
+
+// Register the service worker so iOS doesn't sit on stale HTML.
+// Strategy: network-first (defined in sw.js). Each launch tries the network;
+// cache is only used as a fallback when offline.
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('sw.js').catch(() => {});
+  });
+}
 </script>
 </body>
 </html>
