@@ -128,6 +128,23 @@ button{font-family:inherit;font-size:inherit;color:inherit;border:0;background:n
 .run-summary{font-size:12px;color:var(--text-2);padding:0 16px 14px;line-height:1.4}
 .run-summary b{color:var(--text);font-weight:600}
 
+/* Workout score card — appears when day status is 'done' */
+.score-card{margin:6px 16px 16px;border-radius:18px;padding:1.5px;background:linear-gradient(135deg,#ff9f0a 0%,#ff375f 60%,#bf5af2 100%)}
+.score-inner{background:var(--bg);border-radius:16.5px;padding:20px}
+.score-tag{font-size:11px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;background:linear-gradient(135deg,#ff9f0a,#ff375f);-webkit-background-clip:text;background-clip:text;color:transparent;margin-bottom:10px}
+.score-row{display:flex;align-items:flex-end;gap:14px;margin-bottom:14px}
+.score-num{font-size:64px;font-weight:800;letter-spacing:-2px;line-height:1;font-variant-numeric:tabular-nums;background:linear-gradient(135deg,#ff9f0a,#ff375f,#bf5af2);-webkit-background-clip:text;background-clip:text;color:transparent}
+.score-grade{display:flex;flex-direction:column;align-items:flex-start;gap:2px;padding-bottom:6px}
+.score-grade .g{font-size:30px;font-weight:800;letter-spacing:-.6px;line-height:1;color:var(--text)}
+.score-grade .glabel{font-size:10px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;color:var(--text-2)}
+.score-headline{font-size:14px;color:var(--text);font-weight:600;line-height:1.3;margin-bottom:14px}
+.score-stats{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.score-stat{background:var(--card);border-radius:10px;padding:10px 12px}
+.score-stat .label{font-size:10px;font-weight:700;color:var(--text-2);letter-spacing:.5px;text-transform:uppercase;margin-bottom:3px}
+.score-stat .value{font-size:18px;font-weight:700;letter-spacing:-.3px;font-variant-numeric:tabular-nums}
+.score-stat .sub{font-size:11px;color:var(--text-2);margin-top:2px}
+.score-empty{font-size:13px;color:var(--text-2);line-height:1.4}
+
 .next-up{margin-top:12px;font-size:11px;color:var(--text-2);letter-spacing:.4px;text-transform:uppercase;font-weight:600}
 .exercise.complete .next-up{color:rgba(255,255,255,.85)}
 
@@ -877,17 +894,50 @@ function humanTimeAgo(ts){
   return Math.floor(diff/86400000) + ' days ago';
 }
 
-/* Sets are stored as an array of {done, weight} objects.
-   Older saves stored a plain bool array — normalizeSets migrates on read. */
+/* Sets are stored as an array of {done, weight, reps?} objects.
+   Older saves stored a plain bool array — normalizeSets migrates on read.
+   `reps` is only set on AMRAP exercises where the user enters actual reps. */
 function normalizeSets(raw, suggestedWeight){
   if (!Array.isArray(raw)) return [];
   return raw.map(item => {
     if (typeof item === 'object' && item !== null){
-      return { done: !!item.done, weight: (item.weight === undefined || item.weight === null || item.weight === '') ? suggestedWeight : String(item.weight) };
+      return {
+        done: !!item.done,
+        weight: (item.weight === undefined || item.weight === null || item.weight === '') ? String(suggestedWeight) : String(item.weight),
+        reps: (item.reps === undefined || item.reps === null) ? '' : String(item.reps)
+      };
     }
-    return { done: !!item, weight: String(suggestedWeight) };
+    return { done: !!item, weight: String(suggestedWeight), reps: '' };
   });
 }
+
+/* Parse a prescribed reps string into a numeric count for volume math.
+   "10" → 10, "12/leg" → 24, "30 sec" → 30, "AMRAP" → null (look at user-entered) */
+function parseRepsCount(reps){
+  if (typeof reps === 'number') return reps;
+  if (!reps) return 0;
+  const s = String(reps);
+  if (/AMRAP/i.test(s)) return null;
+  const perLeg = s.match(/(\d+)\s*\/\s*(?:leg|side)/i);
+  if (perLeg) return parseInt(perLeg[1], 10) * 2;
+  const sec = s.match(/(\d+)\s*sec/i);
+  if (sec) return parseInt(sec[1], 10);
+  const num = s.match(/(\d+)/);
+  return num ? parseInt(num[1], 10) : 0;
+}
+
+/* Bodyweight counts as ~1 lb-equivalent in the volume formula so a BW set
+   still contributes meaningfully without being dominated by DB exercises. */
+function parseWeightVal(weight){
+  if (weight == null) return 0;
+  const s = String(weight).trim();
+  if (!s) return 0;
+  if (/^BW$/i.test(s)) return 1;
+  const n = parseFloat(s);
+  return isNaN(n) ? 0 : n;
+}
+
+function isAmrapReps(reps){ return /AMRAP/i.test(String(reps || '')); }
 function getSets(dayIdx, exId){ const k = dayKeyForView(dayIdx); return (state.daily[k] && state.daily[k][exId]) || []; }
 function setSets(dayIdx, exId, arr){ const k = dayKeyForView(dayIdx); if(!state.daily[k]) state.daily[k]={}; state.daily[k][exId]=arr; save(); }
 function setsDoneCount(arr){
@@ -1206,6 +1256,10 @@ function renderMain(){
   // Done / Skip buttons
   main.appendChild(buildDayActions());
 
+  // Workout score — only when the day is marked done
+  const score = buildScoreCard();
+  if (score) main.appendChild(score);
+
   const ft = document.createElement('div');
   ft.className = 'footnote';
   ft.textContent = 'Tap a dot to log a set · Long-press a card to reset · Rest auto-fires';
@@ -1364,6 +1418,138 @@ function nextPreset(current, presets){
   if (current === 0) return presets[0];
   const idx = presets.indexOf(current);
   return idx < 0 ? presets[0] : presets[(idx + 1) % presets.length];
+}
+
+/* ============================================================
+   WORKOUT SCORE
+   Computes a 0–110ish score for the day based on:
+   - effort: % of prescribed sets actually marked done
+   - intensity: actual volume (weight × reps) vs prescribed volume
+   - cardio bonus: +10 if extra cardio was logged
+   - over-prescription bonus: +up to ~30 for going beyond suggested weights
+   ============================================================ */
+function computeDayScore(){
+  const day = getEffectiveDay(viewedDay);
+  let setsTotal = 0, setsDone = 0;
+  let prescribedVol = 0, actualVol = 0;
+  let amrapTotal = 0;
+
+  if (day.type === 'strength'){
+    const allEx = day.exercises.concat(day.bonus ? day.bonus.exercises : []);
+    allEx.forEach(ex => {
+      const cur = getCurrent(ex);
+      const sets = normalizeSets(getSets(viewedDay, ex.id), cur.weight);
+      const sw = parseWeightVal(cur.weight);
+      const srBase = parseRepsCount(cur.reps);
+      // For AMRAP, treat 30 reps as the "prescribed" baseline so volume math has something to compare to
+      const sr = srBase == null ? 30 : srBase;
+
+      for (let i = 0; i < cur.sets; i++){
+        setsTotal++;
+        prescribedVol += sw * sr;
+        const set = sets[i];
+        if (set && set.done){
+          setsDone++;
+          const aw = parseWeightVal(set.weight);
+          let ar;
+          if (isAmrapReps(cur.reps)){
+            ar = parseInt(set.reps, 10) || 0;
+            amrapTotal += ar;
+          } else {
+            ar = sr;
+          }
+          actualVol += aw * ar;
+        }
+      }
+    });
+  }
+
+  const run = getRun(viewedDay);
+  const cardioBonus = run.done ? 10 : 0;
+
+  const effort = setsTotal > 0 ? (setsDone / setsTotal) * 100 : 0;
+  const volRatio = prescribedVol > 0 ? actualVol / prescribedVol : (run.done ? 1 : 0);
+  const volScoreCapped = Math.min(volRatio, 1) * 100;
+
+  let score;
+  if (setsTotal > 0){
+    // Mostly effort, some intensity, plus over-prescription bonus
+    score = Math.round(effort * 0.65 + volScoreCapped * 0.35);
+    if (volRatio > 1) score += Math.min(30, Math.round((volRatio - 1) * 60));
+    score += cardioBonus;
+  } else {
+    // Cardio/rest day: completing the day = solid baseline, cardio adds
+    score = (getDayStatus(viewedDay) === 'done' ? 75 : 0) + cardioBonus + (run.done ? 15 : 0);
+  }
+
+  let grade;
+  if (score >= 110) grade = 'S';
+  else if (score >= 100) grade = 'A+';
+  else if (score >= 92) grade = 'A';
+  else if (score >= 85) grade = 'A-';
+  else if (score >= 78) grade = 'B+';
+  else if (score >= 70) grade = 'B';
+  else if (score >= 62) grade = 'C+';
+  else if (score >= 55) grade = 'C';
+  else if (score >= 40) grade = 'D';
+  else grade = 'F';
+
+  return { score, grade, setsDone, setsTotal, prescribedVol, actualVol, volRatio, cardioBonus, run, amrapTotal, dayType: day.type };
+}
+
+function fmtVolume(n){
+  if (!n) return '0';
+  if (n >= 10000) return (n / 1000).toFixed(1) + 'k';
+  return Math.round(n).toLocaleString();
+}
+
+function buildScoreCard(){
+  if (getDayStatus(viewedDay) !== 'done') return null;
+  const s = computeDayScore();
+  const wrap = document.createElement('div');
+  wrap.className = 'score-card';
+
+  let headline;
+  if (s.dayType === 'strength'){
+    if (s.setsDone === 0) headline = 'Marked done with no sets logged.';
+    else if (s.setsDone === s.setsTotal && s.volRatio >= 1) headline = `All ${s.setsTotal} sets completed.${s.volRatio > 1.05 ? ' Pushed past the prescribed weight.' : ''}`;
+    else if (s.setsDone === s.setsTotal) headline = `All ${s.setsTotal} sets completed.`;
+    else headline = `${s.setsDone} of ${s.setsTotal} sets logged.`;
+    if (s.run.done) headline += ' Plus extra cardio.';
+  } else {
+    headline = s.run.done ? 'Day complete with extra cardio.' : 'Day complete.';
+  }
+
+  const stats = [];
+  if (s.setsTotal > 0){
+    stats.push(`<div class="score-stat"><div class="label">Sets</div><div class="value">${s.setsDone}/${s.setsTotal}</div><div class="sub">completed</div></div>`);
+    stats.push(`<div class="score-stat"><div class="label">Volume</div><div class="value">${fmtVolume(s.actualVol)}</div><div class="sub">vs ${fmtVolume(s.prescribedVol)} prescribed</div></div>`);
+  }
+  if (s.amrapTotal > 0){
+    stats.push(`<div class="score-stat"><div class="label">Push-ups</div><div class="value">${s.amrapTotal}</div><div class="sub">total reps</div></div>`);
+  }
+  if (s.run.done){
+    const subParts = [];
+    if (s.run.distance) subParts.push(`${escapeAttr(s.run.distance)} mi`);
+    if (s.run.duration) subParts.push(`${escapeAttr(s.run.duration)}`);
+    stats.push(`<div class="score-stat"><div class="label">Cardio</div><div class="value">+${s.cardioBonus}</div><div class="sub">${subParts.join(' · ') || 'logged'}</div></div>`);
+  }
+
+  wrap.innerHTML = `
+    <div class="score-inner">
+      <div class="score-tag">Workout score</div>
+      <div class="score-row">
+        <div class="score-num">${s.score}</div>
+        <div class="score-grade">
+          <div class="glabel">Grade</div>
+          <div class="g">${s.grade}</div>
+        </div>
+      </div>
+      <div class="score-headline">${headline}</div>
+      ${stats.length ? `<div class="score-stats">${stats.join('')}</div>` : `<div class="score-empty">Log sets, push-ups, or extra cardio for a richer score.</div>`}
+    </div>
+  `;
+  return wrap;
 }
 
 /* ============================================================
@@ -1541,29 +1727,39 @@ function buildExerciseCard(ex, num, isBonus){
 
   const listEl = card.querySelector('.set-list');
   const isBW = cur.weight === 'BW';
+  const isAmrap = isAmrapReps(cur.reps);
   for (let i = 0; i < cur.sets; i++){
-    const setData = sets[i] || { done:false, weight:String(cur.weight) };
+    const setData = sets[i] || { done:false, weight:String(cur.weight), reps:'' };
     const row = document.createElement('div');
     row.className = 'set-row' + (setData.done ? ' done' : '');
+    let inputHtml;
+    if (isAmrap){
+      // AMRAP exercises: enter actual rep count per set
+      inputHtml = `<input class="weight-input" type="text" inputmode="numeric" pattern="[0-9]*" data-field="reps" value="${escapeAttr(setData.reps)}" placeholder="—" /><div class="weight-unit">reps</div>`;
+    } else if (isBW){
+      inputHtml = `<div class="weight-input bw">BW</div><div class="weight-unit"></div>`;
+    } else {
+      inputHtml = `<input class="weight-input" type="text" inputmode="decimal" pattern="[0-9.]*" data-field="weight" value="${escapeAttr(setData.weight)}" /><div class="weight-unit">lb</div>`;
+    }
     row.innerHTML = `
       <div class="set-num">SET ${i + 1}</div>
-      <div class="set-target">× ${cur.reps}</div>
-      ${isBW
-        ? `<div class="weight-input bw">BW</div><div class="weight-unit"></div>`
-        : `<input class="weight-input" type="text" inputmode="decimal" pattern="[0-9.]*" value="${escapeAttr(setData.weight)}" /><div class="weight-unit">lb</div>`}
+      <div class="set-target">${isAmrap ? 'AMRAP' : '× ' + cur.reps}</div>
+      ${inputHtml}
       <button class="set-check-btn" type="button" aria-label="Mark set ${i+1} done">${setData.done ? CHECK_SVG : (i+1)}</button>
     `;
     const checkBtn = row.querySelector('.set-check-btn');
     checkBtn.onclick = (e) => { e.stopPropagation(); toggleSet(ex, i); };
-    if (!isBW){
-      const input = row.querySelector('.weight-input');
+    const input = row.querySelector('.weight-input');
+    if (input && input.tagName === 'INPUT'){
       input.onclick = (e) => e.stopPropagation();
       input.onfocus = (e) => { e.target.select(); };
-      input.onchange = (e) => {
+      const commit = (e) => {
         e.stopPropagation();
-        updateSetWeight(ex, i, e.target.value);
+        if (input.dataset.field === 'reps') updateSetReps(ex, i, input.value);
+        else updateSetWeight(ex, i, input.value, input);
       };
-      input.onblur = (e) => updateSetWeight(ex, i, e.target.value);
+      input.onchange = commit;
+      input.onblur = commit;
     }
     listEl.appendChild(row);
   }
@@ -1623,14 +1819,35 @@ function toggleSet(ex, idx){
   renderMain();
 }
 
-function updateSetWeight(ex, idx, value){
+function updateSetWeight(ex, idx, value, inputEl){
   const arr = ensureSetArray(ex);
   const trimmed = String(value).trim();
-  // Allow blank → falls back to suggested on next render
   if (arr[idx].weight === trimmed) return;
   arr[idx] = Object.assign({}, arr[idx], { weight: trimmed });
+  // Cascade: any change propagates to all later sets of this exercise
+  for (let j = idx + 1; j < arr.length; j++){
+    arr[j] = Object.assign({}, arr[j], { weight: trimmed });
+  }
   setSets(viewedDay, ex.id, arr);
-  // No re-render — keeps focus while typing-then-blurring
+  // Update DOM in place (no re-render) so we don't steal focus mid-edit
+  if (inputEl){
+    const card = inputEl.closest('.exercise');
+    if (card){
+      const inputs = card.querySelectorAll('.set-row .weight-input:not(.bw)');
+      for (let j = idx + 1; j < inputs.length; j++){
+        if (inputs[j].dataset.field !== 'weight') continue;
+        if (inputs[j].value !== trimmed) inputs[j].value = trimmed;
+      }
+    }
+  }
+}
+
+function updateSetReps(ex, idx, value){
+  const arr = ensureSetArray(ex);
+  const trimmed = String(value).trim();
+  if ((arr[idx].reps || '') === trimmed) return;
+  arr[idx] = Object.assign({}, arr[idx], { reps: trimmed });
+  setSets(viewedDay, ex.id, arr);
 }
 
 function maybeCreditCompletion(ex){
