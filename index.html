@@ -188,6 +188,12 @@ button{font-family:inherit;font-size:inherit;color:inherit;border:0;background:n
 .supps-amt-btn.on{background:var(--accent);color:#fff}
 .supps-amt-btn:active{transform:scale(.94)}
 
+/* Today's volume / score on strength days */
+.volume-card{margin:18px 16px 8px;background:linear-gradient(135deg,#ff9f0a 0%,#ff375f 100%);border-radius:14px;padding:18px 20px;color:#fff}
+.volume-card .volume-label{font-size:11px;font-weight:700;letter-spacing:.7px;text-transform:uppercase;opacity:.92;margin-bottom:6px}
+.volume-card .volume-value{font-size:36px;font-weight:800;letter-spacing:-1px;line-height:1.05}
+.volume-card .volume-sub{font-size:13px;opacity:.92;margin-top:6px;line-height:1.35}
+
 /* Pull-forward (skip rest, do next workout) */
 .pull-forward-wrap{margin:18px 16px 8px}
 .pull-forward-btn{width:100%;padding:14px 18px;background:linear-gradient(135deg,#0a84ff 0%,#30d158 100%);color:#fff;border-radius:12px;font-size:15px;font-weight:600;display:flex;align-items:center;justify-content:space-between;gap:10px;transition:transform .15s ease}
@@ -974,6 +980,99 @@ function setSuccesses(exId, n){ state.successes[exId] = Math.max(0, n); save(); 
 
 function isMaxed(ex){ return getLevel(ex.id) >= ex.progression.length - 1; }
 
+/* ============================================================
+   WORKOUT VOLUME / SCORE
+   Volume = sets × reps × weight, summed across the workout.
+   Captures both how many reps you did and how heavy you went so a session
+   with 4×15 @ 30 lb scores higher than 4×10 @ 20 lb.
+   ============================================================ */
+const BODYWEIGHT_LBS = 165;
+const AMRAP_DEFAULT_REPS = 12;
+
+// Flat lookup: every exercise across the program, keyed by id.
+const ALL_EXERCISES = (() => {
+  const m = {};
+  Object.values(PROGRAM).forEach(p => {
+    if (p.exercises) p.exercises.forEach(ex => m[ex.id] = ex);
+    if (p.bonus && p.bonus.exercises) p.bonus.exercises.forEach(ex => m[ex.id] = ex);
+  });
+  return m;
+})();
+
+function parseReps(repsStr){
+  if (typeof repsStr === 'number') return repsStr;
+  if (!repsStr) return 0;
+  const s = String(repsStr).toLowerCase();
+  if (s.includes('amrap')) return AMRAP_DEFAULT_REPS;
+  if (s.includes('sec') || s.includes('hold')) return 0; // isometric — score 0
+  const perSide = s.match(/(\d+)\s*\/\s*(leg|side)/);
+  if (perSide) return parseInt(perSide[1]) * 2;
+  const m = s.match(/(\d+)/);
+  return m ? parseInt(m[1]) : 0;
+}
+
+function parseWeight(weightStr){
+  if (typeof weightStr === 'number') return weightStr;
+  if (!weightStr) return 0;
+  const s = String(weightStr).toUpperCase();
+  if (s === 'BW') return BODYWEIGHT_LBS;
+  // Weight ranges like "25–30" — use the upper bound (the heavier you'd choose)
+  const range = s.match(/(\d+)\s*[\-–]\s*(\d+)/);
+  if (range) return parseInt(range[2]);
+  const m = s.match(/(\d+)/);
+  return m ? parseInt(m[1]) : 0;
+}
+
+function exerciseSetVolume(ex, setsDone){
+  if (setsDone <= 0) return 0;
+  const cur = getCurrent(ex);
+  const reps = parseReps(cur.reps);
+  const weight = parseWeight(cur.weight);
+  return setsDone * reps * weight;
+}
+
+// Volume for whatever's logged on a given date. Walks the daily entry and
+// looks up each exercise by id (ignoring _-prefixed flags).
+function dayVolume(dateKey){
+  const d = state.daily[dateKey] || {};
+  let volume = 0, sets = 0, exercises = 0;
+  for (const exId of Object.keys(d)){
+    if (exId.startsWith('_') || exId === 'cardio-done' || exId === 'recovery-done') continue;
+    const ex = ALL_EXERCISES[exId];
+    if (!ex) continue;
+    const setsDone = (d[exId] || []).filter(Boolean).length;
+    if (setsDone > 0){
+      volume += exerciseSetVolume(ex, setsDone);
+      sets += setsDone;
+      exercises++;
+    }
+  }
+  return { volume, sets, exercises };
+}
+
+function weekVolume(){
+  const today = new Date();
+  const monday = new Date(today);
+  monday.setDate(today.getDate() - ((today.getDay() + 6) % 7));
+  let v = 0;
+  for (let i = 0; i < 7; i++){
+    const d = new Date(monday); d.setDate(monday.getDate() + i);
+    v += dayVolume(dateToKey(d)).volume;
+  }
+  return v;
+}
+
+function allTimeVolume(){
+  let v = 0;
+  for (const k of Object.keys(state.daily)) v += dayVolume(k).volume;
+  return v;
+}
+
+function formatLbs(n){
+  if (!n) return '0 lbs';
+  return Math.round(n).toLocaleString() + ' lbs';
+}
+
 function getDayStatus(dayIdx){
   const k = dayKeyForView(dayIdx);
   return state.daily[k] && state.daily[k]._status; // 'done' | 'skipped' | undefined
@@ -1650,6 +1749,19 @@ function renderStrength(main, day){
     b.appendChild(inner);
     main.appendChild(b);
   }
+
+  // Today's volume (sets × reps × weight) — updates as the user checks sets
+  const v = dayVolume(dayKeyForView(viewedDay));
+  if (v.sets > 0){
+    const card = document.createElement('div');
+    card.className = 'volume-card';
+    card.innerHTML = `
+      <div class="volume-label">Today's Score</div>
+      <div class="volume-value">${formatLbs(v.volume)}</div>
+      <div class="volume-sub">${v.sets} set${v.sets===1?'':'s'} across ${v.exercises} exercise${v.exercises===1?'':'s'}</div>
+    `;
+    main.appendChild(card);
+  }
 }
 
 const CHECK_SVG = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none"><polyline points="5 12 10 17 19 7" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>';
@@ -2073,6 +2185,17 @@ function renderProgress(main){
     <div class="stat-card"><div class="label">All-time</div><div class="value">${all}</div><div class="sub">workouts logged</div></div>
   `;
   main.appendChild(stats);
+
+  // Volume row — sets × reps × weight, summed
+  const wkVol = weekVolume();
+  const allVol = allTimeVolume();
+  const volStats = document.createElement('div');
+  volStats.className = 'stats-row';
+  volStats.innerHTML = `
+    <div class="stat-card"><div class="label">Week score</div><div class="value">${formatLbs(wkVol)}</div><div class="sub">lifted this week</div></div>
+    <div class="stat-card"><div class="label">All-time score</div><div class="value">${formatLbs(allVol)}</div><div class="sub">lifted all-time</div></div>
+  `;
+  main.appendChild(volStats);
 
   // Activity — last 14 days
   const heading0 = document.createElement('div');
